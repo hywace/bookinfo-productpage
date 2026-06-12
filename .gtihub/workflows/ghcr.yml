@@ -1,0 +1,512 @@
+name: Build and Deploy to EKS
+
+on:
+  push:
+    branches: [main, dev, uat]
+  pull_request:
+    branches: [main, dev, uat]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build-and-push:
+    name: Build and Push to GHCR
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+
+    permissions:
+      contents: read
+      packages: write
+
+    outputs:
+      image_tag: ${{ github.sha }}
+      service_name: ${{ steps.set-service.outputs.service_name }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set service name
+        id: set-service
+        run: |
+          SERVICE_NAME="${{ github.event.repository.name }}"
+          echo "service_name=$SERVICE_NAME" >> $GITHUB_OUTPUT
+          echo "Service Name: $SERVICE_NAME"
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository }}
+          tags: |
+            type=sha,prefix=,format=long
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.repository }}:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ github.repository }}:latest
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Image digest
+        run: |
+          echo "Image pushed to: ${{ env.REGISTRY }}/${{ github.repository }}:${{ github.sha }}"
+
+  deploy-dev:
+    name: Deploy to Dev
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/dev' && github.event_name == 'push'
+    needs: [build-and-push]
+    environment:
+      name: dev
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'v1.28.0'
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Connect to EKS
+        run: |
+          aws eks update-kubeconfig \
+            --region ${{ secrets.AWS_REGION }} \
+            --name ${{ secrets.EKS_CLUSTER_NAME }}
+
+          kubectl cluster-info
+          kubectl get nodes
+
+      - name: Setup Dev Namespace
+        run: |
+          kubectl create namespace dev --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Generate Kubernetes Manifests
+        env:
+          SERVICE_NAME: ${{ needs.build-and-push.outputs.service_name }}
+          IMAGE_TAG: ${{ needs.build-and-push.outputs.image_tag }}
+          NAMESPACE: dev
+        run: |
+          cat > deployment.yaml <<EOF
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: ${SERVICE_NAME}
+            namespace: ${NAMESPACE}
+            labels:
+              app: ${SERVICE_NAME}
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: ${SERVICE_NAME}
+            template:
+              metadata:
+                labels:
+                  app: ${SERVICE_NAME}
+              spec:
+                imagePullSecrets:
+                - name: ghcr-secret
+                containers:
+                - name: ${SERVICE_NAME}
+                  image: ${{ env.REGISTRY }}/${{ github.repository }}:${IMAGE_TAG}
+                  imagePullPolicy: Always
+                  ports:
+                  - containerPort: 80
+                    name: http
+                    protocol: TCP
+                  env:
+                  - name: ENVIRONMENT
+                    value: "dev"
+                  resources:
+                    requests:
+                      memory: "128Mi"
+                      cpu: "100m"
+                    limits:
+                      memory: "256Mi"
+                      cpu: "200m"
+                  livenessProbe:
+                    httpGet:
+                      path: /health
+                      port: 80
+                    initialDelaySeconds: 30
+                    periodSeconds: 10
+                  readinessProbe:
+                    httpGet:
+                      path: /ready
+                      port: 80
+                    initialDelaySeconds: 5
+                    periodSeconds: 5
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ${SERVICE_NAME}
+            namespace: ${NAMESPACE}
+            labels:
+              app: ${SERVICE_NAME}
+          spec:
+            type: ClusterIP
+            ports:
+            - port: 80
+              targetPort: 80
+              protocol: TCP
+              name: http
+            selector:
+              app: ${SERVICE_NAME}
+          EOF
+
+          echo "Generated manifests:"
+          cat deployment.yaml
+
+      - name: Deploy to Dev
+        run: |
+          kubectl apply -f deployment.yaml
+          echo "Deployment applied to dev namespace"
+
+      - name: Wait for Deployment
+        env:
+          SERVICE_NAME: ${{ needs.build-and-push.outputs.service_name }}
+        run: |
+          kubectl rollout status deployment/${SERVICE_NAME} -n dev --timeout=5m
+
+      - name: Verify Deployment
+        env:
+          SERVICE_NAME: ${{ needs.build-and-push.outputs.service_name }}
+        run: |
+          echo "Pods:"
+          kubectl get pods -n dev -l app=${SERVICE_NAME}
+
+          echo "Service:"
+          kubectl get svc -n dev ${SERVICE_NAME}
+
+          echo "Deployment:"
+          kubectl describe deployment ${SERVICE_NAME} -n dev
+
+      - name: Deployment Summary
+        env:
+          SERVICE_NAME: ${{ needs.build-and-push.outputs.service_name }}
+        run: |
+          echo "### ✅ Dev Deployment Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Service:** ${SERVICE_NAME}" >> $GITHUB_STEP_SUMMARY
+          echo "**Image:** ${{ env.REGISTRY }}/${{ github.repository }}:${{ needs.build-and-push.outputs.image_tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Namespace:** dev" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Pods:**" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          kubectl get pods -n dev -l app=${SERVICE_NAME} >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+  deploy-uat:
+    name: Deploy to UAT
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/uat' && github.event_name == 'push'
+    needs: [build-and-push]
+    environment:
+      name: uat
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'v1.28.0'
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Connect to EKS
+        run: |
+          aws eks update-kubeconfig \
+            --region ${{ secrets.AWS_REGION }} \
+            --name ${{ secrets.EKS_CLUSTER_NAME }}
+
+          kubectl cluster-info
+
+      - name: Setup UAT Namespace
+        run: |
+          kubectl create namespace uat --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Generate Kubernetes Manifests
+        env:
+          SERVICE_NAME: ${{ needs.build-and-push.outputs.service_name }}
+          IMAGE_TAG: ${{ needs.build-and-push.outputs.image_tag }}
+          NAMESPACE: uat
+        run: |
+          cat > deployment.yaml <<EOF
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: ${SERVICE_NAME}
+            namespace: ${NAMESPACE}
+            labels:
+              app: ${SERVICE_NAME}
+          spec:
+            replicas: 2
+            selector:
+              matchLabels:
+                app: ${SERVICE_NAME}
+            template:
+              metadata:
+                labels:
+                  app: ${SERVICE_NAME}
+              spec:
+                imagePullSecrets:
+                - name: ghcr-secret
+                containers:
+                - name: ${SERVICE_NAME}
+                  image: ${{ env.REGISTRY }}/${{ github.repository }}:${IMAGE_TAG}
+                  imagePullPolicy: Always
+                  ports:
+                  - containerPort: 80
+                    name: http
+                    protocol: TCP
+                  env:
+                  - name: ENVIRONMENT
+                    value: "uat"
+                  resources:
+                    requests:
+                      memory: "256Mi"
+                      cpu: "200m"
+                    limits:
+                      memory: "512Mi"
+                      cpu: "500m"
+                  livenessProbe:
+                    httpGet:
+                      path: /health
+                      port: 80
+                    initialDelaySeconds: 30
+                    periodSeconds: 10
+                  readinessProbe:
+                    httpGet:
+                      path: /ready
+                      port: 80
+                    initialDelaySeconds: 5
+                    periodSeconds: 5
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ${SERVICE_NAME}
+            namespace: ${NAMESPACE}
+            labels:
+              app: ${SERVICE_NAME}
+          spec:
+            type: ClusterIP
+            ports:
+            - port: 80
+              targetPort: 80
+              protocol: TCP
+              name: http
+            selector:
+              app: ${SERVICE_NAME}
+          EOF
+
+      - name: Deploy to UAT
+        run: |
+          kubectl apply -f deployment.yaml
+          echo "Deployment applied to uat namespace"
+
+      - name: Wait for Deployment
+        env:
+          SERVICE_NAME: ${{ needs.build-and-push.outputs.service_name }}
+        run: |
+          kubectl rollout status deployment/${SERVICE_NAME} -n uat --timeout=5m
+
+      - name: Verify Deployment
+        env:
+          SERVICE_NAME: ${{ needs.build-and-push.outputs.service_name }}
+        run: |
+          kubectl get pods -n uat -l app=${SERVICE_NAME}
+          kubectl get svc -n uat ${SERVICE_NAME}
+
+      - name: Deployment Summary
+        env:
+          SERVICE_NAME: ${{ needs.build-and-push.outputs.service_name }}
+        run: |
+          echo "### ✅ UAT Deployment Complete" >> $GITHUB_STEP_SUMMARY
+          echo "**Service:** ${SERVICE_NAME}" >> $GITHUB_STEP_SUMMARY
+          echo "**Image:** ${{ env.REGISTRY }}/${{ github.repository }}:${{ needs.build-and-push.outputs.image_tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Namespace:** uat" >> $GITHUB_STEP_SUMMARY
+
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: [build-and-push]
+    environment:
+      name: production
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'v1.28.0'
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Connect to EKS
+        run: |
+          aws eks update-kubeconfig \
+            --region ${{ secrets.AWS_REGION }} \
+            --name ${{ secrets.EKS_CLUSTER_NAME }}
+
+          kubectl cluster-info
+
+      - name: Setup Production Namespace
+        run: |
+          kubectl create namespace production --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Generate Kubernetes Manifests
+        env:
+          SERVICE_NAME: ${{ needs.build-and-push.outputs.service_name }}
+          IMAGE_TAG: ${{ needs.build-and-push.outputs.image_tag }}
+          NAMESPACE: production
+        run: |
+          cat > deployment.yaml <<EOF
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: ${SERVICE_NAME}
+            namespace: ${NAMESPACE}
+            labels:
+              app: ${SERVICE_NAME}
+          spec:
+            replicas: 3
+            selector:
+              matchLabels:
+                app: ${SERVICE_NAME}
+            template:
+              metadata:
+                labels:
+                  app: ${SERVICE_NAME}
+              spec:
+                imagePullSecrets:
+                - name: ghcr-secret
+                containers:
+                - name: ${SERVICE_NAME}
+                  image: ${{ env.REGISTRY }}/${{ github.repository }}:${IMAGE_TAG}
+                  imagePullPolicy: Always
+                  ports:
+                  - containerPort: 80
+                    name: http
+                    protocol: TCP
+                  env:
+                  - name: ENVIRONMENT
+                    value: "production"
+                  resources:
+                    requests:
+                      memory: "512Mi"
+                      cpu: "500m"
+                    limits:
+                      memory: "1Gi"
+                      cpu: "1000m"
+                  livenessProbe:
+                    httpGet:
+                      path: /health
+                      port: 80
+                    initialDelaySeconds: 30
+                    periodSeconds: 10
+                  readinessProbe:
+                    httpGet:
+                      path: /ready
+                      port: 80
+                    initialDelaySeconds: 5
+                    periodSeconds: 5
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ${SERVICE_NAME}
+            namespace: ${NAMESPACE}
+            labels:
+              app: ${SERVICE_NAME}
+          spec:
+            type: ClusterIP
+            ports:
+            - port: 80
+              targetPort: 80
+              protocol: TCP
+              name: http
+            selector:
+              app: ${SERVICE_NAME}
+          EOF
+
+      - name: Deploy to Production
+        run: |
+          kubectl apply -f deployment.yaml
+          echo "Deployment applied to production namespace"
+
+      - name: Wait for Deployment
+        env:
+          SERVICE_NAME: ${{ needs.build-and-push.outputs.service_name }}
+        run: |
+          kubectl rollout status deployment/${SERVICE_NAME} -n production --timeout=10m
+
+      - name: Production Health Check
+        env:
+          SERVICE_NAME: ${{ needs.build-and-push.outputs.service_name }}
+        run: |
+          kubectl wait --for=condition=ready pod \
+            -l app=${SERVICE_NAME} \
+            -n production \
+            --timeout=300s
+
+          echo "Production pods:"
+          kubectl get pods -n production -l app=${SERVICE_NAME}
+
+          echo "Production service:"
+          kubectl get svc -n production ${SERVICE_NAME}
+
+      - name: Deployment Summary
+        env:
+          SERVICE_NAME: ${{ needs.build-and-push.outputs.service_name }}
+        run: |
+          echo "### 🚀 Production Deployment Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Service:** ${SERVICE_NAME}" >> $GITHUB_STEP_SUMMARY
+          echo "**Image:** ${{ env.REGISTRY }}/${{ github.repository }}:${{ needs.build-and-push.outputs.image_tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Namespace:** production" >> $GITHUB_STEP_SUMMARY
+          echo "**Replicas:** 3" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Pods:**" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          kubectl get pods -n production -l app=${SERVICE_NAME} >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
