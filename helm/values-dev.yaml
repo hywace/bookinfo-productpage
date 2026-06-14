@@ -1,0 +1,11 @@
+replicaCount: 2
+namespace: dev
+image:
+  repository: 123456789012.dkr.ecr.ap-southeast-1.amazonaws.com/productpage
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080

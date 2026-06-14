@@ -1,0 +1,64 @@
+name: Build Push ECR and Update GitOps
+
+on:
+  push:
+    branches: [main, dev, uat]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: write
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  ECR_REGISTRY: ${{ vars.ECR_REGISTRY }}
+  IMAGE_NAME: productpage
+  VALUES_FILE: helm/values-dev.yaml
+
+jobs:
+  build-push-update:
+    name: Build image push to ECR update Helm values
+    runs-on: ubuntu-latest
+    if: github.actor != 'github-actions[bot]'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set image tag
+        run: echo "IMAGE_TAG=${GITHUB_SHA}" >> "$GITHUB_ENV"
+
+      - name: Build and push image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+            ${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+
+      - name: Install yq
+        uses: mikefarah/yq@v4.44.2
+
+      - name: Update Helm values
+        run: |
+          yq -i '.image.repository = strenv(ECR_REGISTRY) + "/" + strenv(IMAGE_NAME)' "$VALUES_FILE"
+          yq -i '.image.tag = strenv(IMAGE_TAG)' "$VALUES_FILE"
+
+      - name: Commit updated values
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$VALUES_FILE"
+          git diff --staged --quiet && exit 0
+          git commit -m "chore(gitops): update image tag to $IMAGE_TAG [skip ci]"
+          git push
