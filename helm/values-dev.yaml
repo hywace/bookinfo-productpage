@@ -4,8 +4,7 @@ image:
   repository: 585008089219.dkr.ecr.ap-southeast-1.amazonaws.com/productpage
   tag: c72c0a84aa658421f336048b592c6218ff048703
   pullPolicy: IfNotPresent
-
-imagePullSecret:
+imagePullSecrets:
   - name: ecr-secret
 service:
   type: ClusterIP
