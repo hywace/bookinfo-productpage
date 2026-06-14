@@ -1,4 +1,4 @@
-replicaCount: 2
+replicaCount: 1
 namespace: dev
 image:
   repository: 585008089219.dkr.ecr.ap-southeast-1.amazonaws.com/productpage
