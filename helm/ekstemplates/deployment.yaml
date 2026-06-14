@@ -1,9 +1,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: productpage
-  labels:
-    app: productpage
+  name: {{ include "productpage.fullname" . }}
   namespace: {{ .Values.namespace }}
 spec:
   replicas: {{ .Values.replicaCount }}
@@ -15,10 +13,7 @@ spec:
       labels:
         app: productpage
     spec:
-      {{- if .Values.imagePullSecrets }}
-      imagePullSecrets:
-        {{- toYaml .Values.imagePullSecrets | nindent 8 }}
-      {{- end }}
+      serviceAccountName: {{ .Values.serviceAccount.name }}   # <-- This is the key
       containers:
       - name: productpage
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"

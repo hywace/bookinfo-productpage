@@ -10,5 +10,8 @@ service:
   port: 80
   targetPort: 8080
 
-imagePullSecrets:
-  - name: ecr-secret
+serviceAccount:
+  create: true
+  name: bookinfo-dev-sa
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::585008089219:role/BookinfoEKSPodRole
