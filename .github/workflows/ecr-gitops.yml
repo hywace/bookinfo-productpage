@@ -30,18 +30,13 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN || secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-
+      - name: Verify AWS Identity
+        run: aws sts get-caller-identity
       - name: Login to Amazon ECR
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Debug ECR login
         run: |
-          echo "=== Docker config auths ==="
-          cat ~/.docker/config.json | grep -o '"auths":{[^}]*}' || echo "no auths found"
-          echo "=== ECR registry check ==="
-          aws ecr describe-repositories --region "$AWS_REGION" \
-            --repository-names "$IMAGE_NAME" \
-            --query 'repositories[0].repositoryUri' --output text 2>&1 || echo "repo not found"
+          aws ecr get-login-password --region "$AWS_REGION" \
+            | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+          echo "Docker login exit: $?"
 
       - name: Set image tag
         run: |
