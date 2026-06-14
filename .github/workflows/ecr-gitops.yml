@@ -58,8 +58,16 @@ jobs:
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
 
+      - name: Explicit Docker login to ECR (for buildx)
+        run: |
+          aws ecr get-login-password --region "$AWS_REGION" \
+            | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+
       - name: Set image tag
-        run: echo "IMAGE_TAG=${GITHUB_SHA}" >> "$GITHUB_ENV"
+        run: |
+          BRANCH="${GITHUB_REF_NAME}"
+          echo "IMAGE_TAG=${GITHUB_SHA}" >> "$GITHUB_ENV"
+          echo "BRANCH_TAG=${BRANCH}" >> "$GITHUB_ENV"
 
       - name: Build and push image
         uses: docker/build-push-action@v5
@@ -68,7 +76,7 @@ jobs:
           push: true
           tags: |
             ${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
-            ${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            ${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.BRANCH_TAG }}
 
       - name: Install yq
         uses: mikefarah/yq@v4.44.2
