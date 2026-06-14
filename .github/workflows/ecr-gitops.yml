@@ -65,13 +65,13 @@ jobs:
           echo "BRANCH_TAG=${BRANCH}" >> "$GITHUB_ENV"
 
       - name: Build and push image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: true
-          tags: |
-            ${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
-            ${{ env.ECR_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.BRANCH_TAG }}
+        run: |
+          docker build \
+            -t "$ECR_REGISTRY/$IMAGE_NAME:$IMAGE_TAG" \
+            -t "$ECR_REGISTRY/$IMAGE_NAME:$BRANCH_TAG" \
+            .
+          docker push "$ECR_REGISTRY/$IMAGE_NAME:$IMAGE_TAG"
+          docker push "$ECR_REGISTRY/$IMAGE_NAME:$BRANCH_TAG"
 
       - name: Install yq
         uses: mikefarah/yq@v4.44.2
