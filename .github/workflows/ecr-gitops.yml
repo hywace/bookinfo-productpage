@@ -10,8 +10,8 @@ permissions:
   contents: write
 
 env:
-  AWS_REGION: ${{ secrets.AWS_REGION }}
-  ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
+  AWS_REGION: ${{ vars.AWS_REGION || secrets.AWS_REGION || 'ap-southeast-1' }}
+  ECR_REGISTRY: ${{ vars.ECR_REGISTRY || secrets.ECR_REGISTRY }}
   IMAGE_NAME: productpage
   VALUES_FILE: helm/values-dev.yaml
 
@@ -27,14 +27,14 @@ jobs:
 
       - name: Validate required configuration
         run: |
-          test -n "${{ env.AWS_REGION }}" || (echo "Missing AWS_REGION org secret" && exit 1)
-          test -n "${{ env.ECR_REGISTRY }}" || (echo "Missing ECR_REGISTRY org secret" && exit 1)
-          test -n "${{ secrets.AWS_ROLE_ARN }}" || (echo "Missing AWS_ROLE_ARN org secret" && exit 1)
+          test -n "${{ env.AWS_REGION }}" || (echo "Missing AWS_REGION (set vars or secrets)" && exit 1)
+          test -n "${{ env.ECR_REGISTRY }}" || (echo "Missing ECR_REGISTRY (set vars or secrets)" && exit 1)
+          test -n "${{ vars.AWS_ROLE_ARN || secrets.AWS_ROLE_ARN }}" || (echo "Missing AWS_ROLE_ARN (set vars or secrets)" && exit 1)
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN || secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
