@@ -2,7 +2,7 @@ replicaCount: 2
 namespace: dev
 image:
   repository: 585008089219.dkr.ecr.ap-southeast-1.amazonaws.com/productpage
-  tag: c72c0a84aa658421f336048b592c6218ff048703
+  tag: 9a0a17cff50ae3894459039c44e0635a877d1c98
   pullPolicy: IfNotPresent
 imagePullSecrets:
   - name: ecr-secret
