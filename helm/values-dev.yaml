@@ -11,5 +11,9 @@ service:
   port: 80
   targetPort: 80
 
+app:
+  name: productpage
+
+serviceAccountName: ecr-sa
 imagePullSecrets:
   - name: ecr-secret

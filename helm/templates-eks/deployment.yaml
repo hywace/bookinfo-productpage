@@ -9,16 +9,13 @@ spec:
   replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
-      app: productpage
+      app: {{ .Values.app.name }}
   template:
     metadata:
       labels:
-        app: productpage
+        app: {{ .Values.app.name }}
     spec:
-      {{- if .Values.imagePullSecrets }}
-      imagePullSecrets:
-        {{- toYaml .Values.imagePullSecrets | nindent 8 }}
-      {{- end }}
+      serviceAccountName: {{ .Values.serviceAccountName }}
       containers:
       - name: productpage
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
