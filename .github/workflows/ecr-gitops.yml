@@ -36,6 +36,20 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
       - name: Verify AWS Identity
         run: aws sts get-caller-identityssss
+      - name: Ensure ECR repository exists
+        run: |
+          if ! aws ecr describe-repositories \
+            --repository-names $IMAGE_NAME \
+            --region $AWS_REGION >/dev/null 2>&1; then
+
+            echo "Creating ECR repository: $IMAGE_NAME"
+
+            aws ecr create-repository \
+              --repository-name $IMAGE_NAME \
+              --region $AWS_REGION
+          else
+            echo "Repository already exists"
+          fi
       - name: Debug ECR Registry
         run: |
           echo "ECR_REGISTRY=$ECR_REGISTRY"
