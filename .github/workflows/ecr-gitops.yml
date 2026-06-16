@@ -35,7 +35,7 @@ jobs:
           role-to-assume: ${{ vars.AWS_ROLE_ARN || secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
       - name: Verify AWS Identity
-        run: aws sts get-caller-identityssss
+        run: aws sts get-caller-identity
       - name: Ensure ECR repository exists
         run: |
           if ! aws ecr describe-repositories \
