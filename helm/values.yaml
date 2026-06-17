@@ -1,8 +1,8 @@
 replicaCount: 1
-namespace: uat
+namespace: main
 image:
   repository: 436469730160.dkr.ecr.ap-southeast-1.amazonaws.com/productpage
-  tag: uat-589b500a60034fec0e2dd52e2e9f891c9373f224
+  tag: main-fb7ad02408c5867df26d5edaf321cb59f72b1118
   pullPolicy: IfNotPresent
 imagePullSecrets:
   - name: ecr-secret
