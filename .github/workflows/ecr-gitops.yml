@@ -76,6 +76,7 @@ jobs:
 
       - name: Update Helm values
         run: |
+          yq -i '.namespace = strenv(GITHUB_REF_NAME)' "$VALUES_FILE"
           yq -i '.image.repository = strenv(ECR_REGISTRY) + "/" + strenv(IMAGE_NAME)' "$VALUES_FILE"
           yq -i '.image.tag = strenv(IMAGE_TAG)' "$VALUES_FILE"
 
